@@ -1,8 +1,13 @@
 # backend/management/database.py
+import sys
+from pathlib import Path
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, ForeignKey, DateTime, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings
 
 engine = create_engine(settings.DATABASE_URL, connect_args={"check_same_thread": False})
