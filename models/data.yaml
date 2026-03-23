@@ -1,0 +1,16 @@
+# YOLO数据集配置文件
+# 工装识别PPE检测数据集
+
+# 数据集路径（相对于data.yaml文件所在位置）
+path: ../archive/data  # 从models/目录向上一级到项目根，再进入archive/data
+train: train/images    # 训练集图片路径（相对于path）
+val: val/images        # 验证集图片路径（相对于path）
+test: test/images      # 测试集图片路径（相对于path，可选）
+
+# 类别定义
+names:
+  0: no_ppe        # 未佩戴PPE/未穿工服（需要告警）
+  1: with_ppe      # 佩戴PPE/穿工服（正常）
+
+# 类别数量
+nc: 2

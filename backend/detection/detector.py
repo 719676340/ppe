@@ -4,26 +4,34 @@ import cv2
 import numpy as np
 from typing import List, Dict, Tuple
 from config import settings
+from pathlib import Path
 
-class HelmetDetector:
-    """头盔检测器 - 使用YOLO 11M模型"""
+class PPEDetector:
+    """PPE（个人防护装备）检测器 - 使用训练好的YOLO模型
 
-    def __init__(self, model_path: str = None):
+    模型类别：
+    - 0: no_ppe - 未佩戴PPE/未穿工服（需要告警）
+    - 1: with_ppe - 佩戴PPE/穿工服（正常）
+    """
+
+    def __init__(self, model_path: Path = None):
         """初始化检测器"""
         model_path = model_path or settings.YOLO_MODEL_PATH
         try:
-            self.model = YOLO(model_path)
+            self.model = YOLO(str(model_path))
             self.class_names = self.model.names
+            print(f"模型加载成功，类别: {self.class_names}")
         except Exception as e:
             raise RuntimeError(f"无法加载YOLO模型: {e}")
 
         # 检测参数
         self.confidence_threshold = settings.DEFAULT_CONFIDENCE_THRESHOLD
         self.iou_threshold = settings.DEFAULT_IOU_THRESHOLD
+        self.violation_class_id = settings.VIOLATION_CLASS_ID
 
     def detect(self, image: np.ndarray) -> List[Dict]:
         """
-        检测图像中的人员和头盔
+        检测图像中的PPE佩戴情况
 
         Args:
             image: OpenCV图像 (BGR格式)
@@ -33,9 +41,9 @@ class HelmetDetector:
             {
                 'bbox': [x1, y1, x2, y2],  # 边界框坐标
                 'confidence': float,        # 置信度
-                'class_id': int,           # 类别ID (0=人, 1=佩戴头盔, 2=未佩戴头盔)
+                'class_id': int,           # 类别ID
                 'class_name': str,         # 类别名称
-                'has_helmet': bool         # 是否佩戴头盔
+                'is_compliant': bool       # 是否符合规范（已佩戴PPE）
             }
         """
         results = self.model(
@@ -53,16 +61,17 @@ class HelmetDetector:
                 confidence = float(box.conf[0].cpu().numpy())
                 class_id = int(box.cls[0].cpu().numpy())
 
-                # 判断是否佩戴头盔
-                # 假设类别: 0=person, 1=person_with_helmet, 2=person_without_helmet
-                has_helmet = class_id == 1
+                # 判断是否符合规范（已佩戴PPE）
+                # class_id == 1 表示 with_ppe（正常）
+                is_compliant = class_id == 1
 
                 detections.append({
                     'bbox': [float(x1), float(y1), float(x2), float(y2)],
                     'confidence': confidence,
                     'class_id': class_id,
                     'class_name': self.class_names[class_id],
-                    'has_helmet': has_helmet
+                    'is_compliant': is_compliant,
+                    'is_violation': class_id == self.violation_class_id
                 })
 
         return detections
