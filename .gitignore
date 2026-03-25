@@ -60,3 +60,12 @@ node_modules/
 dist/
 .cache/
 .vite/
+package-lock.json
+
+# Test files
+*.test.py
+video/*.mp4
+!video/.gitkeep
+
+# Database backups
+*.db.backup_*

@@ -31,7 +31,7 @@
             <span>{{ isEdit ? '编辑区域' : '区域详情' }}</span>
           </template>
 
-          <el-form :model="form" :rules="rules" ref="formRef" label-width="100px" v-if="currentZone || !isEdit">
+          <el-form :model="form" :rules="rules" ref="formRef" label-width="100px" v-if="currentZone || isEdit">
             <el-form-item label="区域名称" prop="name">
               <el-input v-model="form.name" placeholder="请输入区域名称" :disabled="!isEdit" />
             </el-form-item>
@@ -139,7 +139,19 @@ const selectZone = async (zone) => {
     coordinates: zone.coordinates,
     enabled: zone.enabled
   }
-  coordinates.value = JSON.parse(zone.coordinates)
+  const coords = JSON.parse(zone.coordinates)
+
+  // 检测坐标格式并转换
+  // 如果坐标值大部分>1，认为是像素坐标，需要转换为归一化坐标
+  const hasLargeValues = coords.some(([x, y]) => x > 1 || y > 1)
+  if (hasLargeValues) {
+    // 假设旧坐标是基于640x360的，转换为归一化坐标
+    coordinates.value = coords.map(([x, y]) => [x / 640, y / 360])
+  } else {
+    // 已经是归一化坐标
+    coordinates.value = coords
+  }
+
   await nextTick()
   drawCanvas()
 }
@@ -215,8 +227,9 @@ const loadCameraImage = async () => {
 const handleCanvasClick = (event) => {
   if (!isEdit.value) return
   const rect = canvasRef.value.getBoundingClientRect()
-  const x = ((event.clientX - rect.left) / rect.width) * 640
-  const y = ((event.clientY - rect.top) / rect.height) * 360
+  // 使用归一化坐标（0-1范围），适配任何视频分辨率
+  const x = (event.clientX - rect.left) / rect.width
+  const y = (event.clientY - rect.top) / rect.height
   coordinates.value.push([x, y])
   drawCanvas()
 }
@@ -245,11 +258,14 @@ const drawCanvas = () => {
 
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-  // 绘制顶点
+  // 绘制顶点（归一化坐标转换为Canvas像素坐标）
   ctx.fillStyle = '#409EFF'
   coordinates.value.forEach(([x, y]) => {
     ctx.beginPath()
-    ctx.arc(x, y, 5, 0, Math.PI * 2)
+    // 归一化坐标转换为Canvas坐标
+    const canvasX = x * canvas.width
+    const canvasY = y * canvas.height
+    ctx.arc(canvasX, canvasY, 5, 0, Math.PI * 2)
     ctx.fill()
   })
 
@@ -258,9 +274,16 @@ const drawCanvas = () => {
     ctx.strokeStyle = '#409EFF'
     ctx.lineWidth = 2
     ctx.beginPath()
-    ctx.moveTo(coordinates.value[0][0], coordinates.value[0][1])
+    // 第一个点
+    ctx.moveTo(
+      coordinates.value[0][0] * canvas.width,
+      coordinates.value[0][1] * canvas.height
+    )
     for (let i = 1; i < coordinates.value.length; i++) {
-      ctx.lineTo(coordinates.value[i][0], coordinates.value[i][1])
+      ctx.lineTo(
+        coordinates.value[i][0] * canvas.width,
+        coordinates.value[i][1] * canvas.height
+      )
     }
     if (coordinates.value.length >= 3) {
       ctx.closePath()
@@ -277,11 +300,11 @@ const drawCanvas = () => {
     ctx.strokeStyle = 'rgba(64, 158, 255, 0.5)'
     ctx.setLineDash([5, 5])
     ctx.beginPath()
-    ctx.moveTo(lastPoint[0], lastPoint[1])
-    ctx.lineTo(
-      (mousePos.value.x / rect.width) * 640,
-      (mousePos.value.y / rect.height) * 360
-    )
+    ctx.moveTo(lastPoint[0] * canvas.width, lastPoint[1] * canvas.height)
+    // 鼠标位置转换为归一化坐标，再转换为Canvas坐标
+    const normalizedX = mousePos.value.x / rect.width
+    const normalizedY = mousePos.value.y / rect.height
+    ctx.lineTo(normalizedX * canvas.width, normalizedY * canvas.height)
     ctx.stroke()
     ctx.setLineDash([])
   }

@@ -11,11 +11,13 @@ export const useNotificationStore = defineStore('notification', {
   }),
 
   actions: {
-    async fetchNotifications(unreadOnly = false) {
+    async fetchNotifications({ unreadOnly = false, skip = 0, limit = 20 } = {}) {
       this.loading = true
       try {
         const result = await notificationApi.getList({
-          unread_only: unreadOnly
+          unread_only: unreadOnly,
+          skip,
+          limit
         })
         this.notifications = result.items
         this.total = result.total
@@ -36,22 +38,22 @@ export const useNotificationStore = defineStore('notification', {
 
     async markRead(id) {
       await notificationApi.markRead(id)
-      await this.fetchNotifications()
+      await this.fetchNotifications({})
     },
 
     async markAllRead() {
       await notificationApi.markAllRead()
-      await this.fetchNotifications()
+      await this.fetchNotifications({})
     },
 
     async deleteNotification(id) {
       await notificationApi.delete(id)
-      await this.fetchNotifications()
+      await this.fetchNotifications({})
     },
 
     async clearOld(days = 30) {
       await notificationApi.clearOld(days)
-      await this.fetchNotifications()
+      await this.fetchNotifications({})
     }
   }
 })

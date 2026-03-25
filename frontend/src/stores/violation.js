@@ -60,6 +60,10 @@ export const useViolationStore = defineStore('violation', {
     async deleteViolation(id) {
       await violationApi.delete(id)
       await this.fetchViolations()
+    },
+
+    async exportViolations(params = {}) {
+      return await violationApi.export(params)
     }
   }
 })

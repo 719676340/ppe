@@ -4,7 +4,7 @@ from pathlib import Path
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, ForeignKey, DateTime, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -23,8 +23,9 @@ class Camera(Base):
     source_url = Column(String(500))
     location = Column(String(100))
     status = Column(String(20), default="active")  # 'active'/'inactive'
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    enabled = Column(Boolean, default=False)  # 是否启用后台检测
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     zones = relationship("DetectionZone", back_populates="camera", cascade="all, delete-orphan")
 
@@ -36,7 +37,7 @@ class DetectionZone(Base):
     name = Column(String(100), nullable=False)
     coordinates = Column(Text, nullable=False)  # JSON格式
     enabled = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     camera = relationship("Camera", back_populates="zones")
 
@@ -50,7 +51,7 @@ class Violation(Base):
     image_path = Column(String(500))
     is_processed = Column(Boolean, default=False)
     remark = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class Notification(Base):
     __tablename__ = "notifications"
@@ -63,7 +64,7 @@ class Notification(Base):
     zone_id = Column(Integer, ForeignKey("detection_zones.id"))
     violation_id = Column(Integer, ForeignKey("violations.id"))
     is_read = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class SystemConfig(Base):
     __tablename__ = "system_config"
@@ -80,7 +81,7 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(20), default="operator")  # 'admin'/'operator'
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 def get_db():
     db = SessionLocal()

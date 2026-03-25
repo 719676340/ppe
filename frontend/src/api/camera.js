@@ -30,5 +30,20 @@ export const cameraApi = {
   // 测试连接
   testConnection(data) {
     return request.post('/cameras/test', data)
+  },
+
+  // 启动检测
+  startDetection(id) {
+    return request.post(`/detection/start/${id}`)
+  },
+
+  // 停止检测
+  stopDetection(id) {
+    return request.post(`/detection/stop/${id}`)
+  },
+
+  // 获取检测状态
+  getDetectionStatus() {
+    return request.get('/detection/status')
   }
 }

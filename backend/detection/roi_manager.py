@@ -34,17 +34,26 @@ class ROIManager:
         将归一化坐标转换为实际像素坐标
 
         Args:
-            normalized_coords: 归一化坐标 [(x1, y1), ...]
+            normalized_coords: 归一化坐标 [(x1, y1), ...] 范围0-1
             image_width: 图像宽度
             image_height: 图像高度
 
         Returns:
             实际像素坐标 [(x1, y1), ...]
         """
-        return [
-            (int(x * image_width), int(y * image_height))
-            for x, y in normalized_coords
-        ]
+        result = []
+        for x, y in normalized_coords:
+            # 如果坐标在0-1范围内，认为是归一化坐标，需要缩放
+            if 0 <= x <= 1 and 0 <= y <= 1:
+                px = int(x * image_width)
+                py = int(y * image_height)
+            else:
+                # 否则认为是像素坐标，直接使用
+                px = int(x)
+                py = int(y)
+            result.append((px, py))
+
+        return result
 
     @staticmethod
     def point_in_polygon(

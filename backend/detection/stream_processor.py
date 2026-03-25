@@ -7,6 +7,7 @@ from queue import Queue
 from typing import Optional, Dict, Any, Callable
 from datetime import datetime
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,8 @@ class StreamProcessor:
         self.thread = None
         self.cap = None
         self.frame_queue = Queue(maxsize=30)  # 保存最近30帧
+        self.latest_detections = []  # 保存最新的检测结果
+        self.detection_frame = None  # 保存带检测框的帧
 
         # 断线检测
         self.last_frame_time = None
@@ -107,6 +110,8 @@ class StreamProcessor:
 
     def _process_stream(self):
         """处理视频流的主循环"""
+        frame_count = 0  # 帧计数器，用于控制检测频率
+
         while self.running:
             # 如果没有连接，尝试连接
             if self.cap is None:
@@ -128,24 +133,34 @@ class StreamProcessor:
                 self._handle_disconnect()
                 self.cap.release()
                 self.cap = None
-                time.sleep(2)
+                time.sleep(0.1)
                 continue
 
             # 连接正常
             self.last_frame_time = datetime.now()
+            frame_count += 1
+
+            # 每5帧执行一次检测（降低检测频率以节省资源）
+            should_detect = (frame_count % 5) == 0
+
+            if should_detect:
+                self._detect_frame(frame)
+
+            # 准备显示的帧：如果有检测结果则绘制检测框
+            if self.latest_detections:
+                display_frame = self._draw_detections(frame.copy(), self.latest_detections)
+            else:
+                display_frame = frame
+
+            # 绘制区域边界（如果有配置的区域）
+            display_frame = self._draw_zone_boundaries(display_frame)
 
             # 将帧放入队列（非阻塞）
             if not self.frame_queue.full():
                 try:
-                    self.frame_queue.put_nowait(frame)
+                    self.frame_queue.put_nowait(display_frame)
                 except:
                     pass  # 队列满，丢弃旧帧
-
-            # 执行检测（每秒处理约5次以节省资源）
-            self._detect_frame(frame)
-
-            # 控制处理频率
-            time.sleep(0.2)  # 约5fps的处理频率
 
     def _detect_frame(self, frame):
         """对单帧进行检测"""
@@ -163,10 +178,20 @@ class StreamProcessor:
                 db.close()
 
             if not zones:
+                logger.warning(f"摄像头 {self.camera_id} 没有配置检测区域")
                 return  # 没有配置检测区域，跳过检测
+
+            logger.info(f"摄像头 {self.camera_id} 有 {len(zones)} 个检测区域")
 
             # 执行检测
             detections = self.detector.detect(frame)
+            logger.info(f"摄像头 {self.camera_id} 检测到 {len(detections)} 个目标, 帧大小={frame.shape[:2]}")
+
+            # 保存最新检测结果
+            self.latest_detections = detections
+
+            # 统计违规数量
+            violations_in_zone = 0
 
             # 处理每个区域
             for zone in zones:
@@ -176,12 +201,25 @@ class StreamProcessor:
                     scaled_coords = self.roi_manager.scale_coordinates(
                         zone_coords, width, height
                     )
+                    logger.info(f"区域 {zone.name}: 归一化坐标={zone_coords}, 像素坐标={scaled_coords}")
+
+                    detections_in_zone = 0
 
                     # 检查每个检测是否在区域内
-                    for detection in detections:
-                        if self.roi_manager.is_bbox_in_zone(detection['bbox'], scaled_coords):
+                    for idx, detection in enumerate(detections):
+                        bbox = detection['bbox']
+                        center_x = (bbox[0] + bbox[2]) / 2
+                        center_y = (bbox[1] + bbox[3]) / 2
+                        is_in_zone = self.roi_manager.is_bbox_in_zone(detection['bbox'], scaled_coords)
+
+                        logger.info(f"  目标{idx+1}: bbox={bbox}, center=({center_x:.1f},{center_y:.1f}), in_zone={is_in_zone}, class={detection.get('class_name')}, violation={detection.get('is_violation')}")
+
+                        if is_in_zone:
+                            detections_in_zone += 1
                             # 在区域内，检查是否违规
                             if detection.get('is_violation', False):
+                                violations_in_zone += 1
+                                logger.info(f"检测到违规: 摄像头{self.camera_id}, 区域{zone.name}, 类别={detection.get('class_name')}")
                                 # 记录违规
                                 self.violation_recorder.record_violation(
                                     self.camera_id,
@@ -190,15 +228,28 @@ class StreamProcessor:
                                     detection
                                 )
 
-                                # 调用回调函数
+                                # 调用回调函数（异步函数需要在新的事件循环中运行）
                                 if self.on_detection_callback:
-                                    self.on_detection_callback({
-                                        'camera_id': self.camera_id,
-                                        'zone_id': zone.id,
-                                        'zone_name': zone.name,
-                                        'detection': detection,
-                                        'timestamp': datetime.now()
-                                    })
+                                    def run_callback():
+                                        try:
+                                            loop = asyncio.new_event_loop()
+                                            asyncio.set_event_loop(loop)
+                                            loop.run_until_complete(self.on_detection_callback({
+                                                'camera_id': self.camera_id,
+                                                'zone_id': zone.id,
+                                                'zone_name': zone.name,
+                                                'detection': detection,
+                                                'timestamp': datetime.now()
+                                            }))
+                                            loop.close()
+                                        except Exception as e:
+                                            logger.error(f"执行回调函数失败: {e}")
+
+                                    # 在新线程中运行回调，避免阻塞检测线程
+                                    callback_thread = threading.Thread(target=run_callback, daemon=True)
+                                    callback_thread.start()
+
+                    logger.info(f"区域 {zone.name} 内有 {detections_in_zone} 个目标")
                 except Exception as e:
                     logger.error(f"处理区域 {zone.id} 时出错: {e}")
 
@@ -237,3 +288,66 @@ class StreamProcessor:
             "reconnect_attempts": self.reconnect_attempts,
             "last_frame_time": self.last_frame_time.isoformat() if self.last_frame_time else None
         }
+
+    def _draw_detections(self, frame, detections) -> np.ndarray:
+        """在帧上绘制检测框和标签"""
+        for detection in detections:
+            bbox = detection['bbox']
+            x1, y1, x2, y2 = [int(v) for v in bbox]
+
+            # 根据是否违规选择颜色
+            is_violation = detection.get('is_violation', False)
+            color = (0, 0, 255) if is_violation else (0, 255, 0)  # 红色违规，绿色正常
+            label = detection.get('class_name', 'unknown')
+            confidence = detection.get('confidence', 0)
+
+            # 绘制检测框
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+            # 绘制标签和置信度
+            label_text = f"{label}: {confidence:.2f}"
+            label_size, _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+            cv2.rectangle(frame, (x1, y1 - label_size[1] - 10),
+                         (x1 + label_size[0], y1), color, -1)
+            cv2.putText(frame, label_text, (x1, y1 - 5),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+        return frame
+
+    def get_latest_detections(self) -> list:
+        """获取最新的检测结果"""
+        return self.latest_detections
+
+    def _draw_zone_boundaries(self, frame) -> np.ndarray:
+        """在帧上绘制检测区域边界"""
+        try:
+            from management.database import SessionLocal, DetectionZone
+            db = SessionLocal()
+
+            try:
+                zones = db.query(DetectionZone).filter(
+                    DetectionZone.camera_id == self.camera_id,
+                    DetectionZone.enabled == True
+                ).all()
+            finally:
+                db.close()
+
+            if zones:
+                height, width = frame.shape[:2]
+                for zone in zones:
+                    zone_coords = self.roi_manager.parse_coordinates(zone.coordinates)
+                    scaled_coords = self.roi_manager.scale_coordinates(
+                        zone_coords, width, height
+                    )
+                    cv2.polylines(frame, [np.array(scaled_coords, dtype=np.int32)],
+                                 True, (255, 255, 0), 2)
+                    # 绘制区域名称
+                    if scaled_coords:
+                        cv2.putText(frame, zone.name,
+                                   (int(scaled_coords[0][0]), int(scaled_coords[0][1]) - 10),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+
+        except Exception as e:
+            logger.error(f"绘制区域边界失败: {e}")
+
+        return frame

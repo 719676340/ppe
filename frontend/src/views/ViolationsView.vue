@@ -26,11 +26,12 @@
         <el-form-item label="时间范围">
           <el-date-picker
             v-model="dateRange"
-            type="daterange"
+            type="datetimerange"
             range-separator="至"
-            start-placeholder="开始日期"
-            end-placeholder="结束日期"
-            value-format="YYYY-MM-DD"
+            start-placeholder="开始时间"
+            end-placeholder="结束时间"
+            value-format="YYYY-MM-DD HH:mm:ss"
+            format="YYYY-MM-DD HH:mm:ss"
           />
         </el-form-item>
         <el-form-item label="处理状态">
@@ -48,16 +49,20 @@
       <!-- 数据表格 -->
       <el-table :data="violations" stripe v-loading="loading" @selection-change="handleSelectionChange">
         <el-table-column type="selection" width="55" />
-        <el-table-column prop="violation_time" label="违规时间" width="180" />
+        <el-table-column prop="violation_time" label="违规时间" width="180">
+          <template #default="scope">
+            {{ formatDateTime(scope.row.violation_time) }}
+          </template>
+        </el-table-column>
         <el-table-column prop="camera_name" label="摄像头" width="120" />
         <el-table-column prop="zone_name" label="区域" width="120" />
         <el-table-column label="截图" width="150">
           <template #default="scope">
             <el-image
               :src="scope.row.image_path"
-              :preview-src-list="[scope.row.image_path]"
               fit="cover"
-              style="width: 100px; height: 60px; border-radius: 4px;"
+              style="width: 100px; height: 60px; border-radius: 4px; cursor: pointer;"
+              @click="previewImage(scope.row.image_path)"
             >
               <template #error>
                 <div class="image-slot">
@@ -138,6 +143,30 @@
         <el-button type="primary" @click="saveRemark">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 图片预览对话框 -->
+    <el-dialog
+      v-model="previewVisible"
+      title="截图预览"
+      width="80%"
+      :z-index="9999"
+      append-to-body
+      class="image-preview-dialog"
+    >
+      <div style="display: flex; justify-content: center; align-items: center; min-height: 400px;">
+        <el-image
+          :src="previewImageUrl"
+          fit="contain"
+          style="max-width: 100%; max-height: 70vh;"
+        >
+          <template #error>
+            <div class="image-slot" style="width: 400px; height: 300px;">
+              <span>图片加载失败</span>
+            </div>
+          </template>
+        </el-image>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -164,6 +193,8 @@ const detailVisible = ref(false)
 const remarkVisible = ref(false)
 const remarkText = ref('')
 const currentViolation = ref(null)
+const previewVisible = ref(false)
+const previewImageUrl = ref('')
 
 const filters = ref({
   camera_id: null,
@@ -174,6 +205,18 @@ const filters = ref({
   page: 1,
   page_size: 20
 })
+
+const formatDateTime = (dateStr) => {
+  if (!dateStr) return ''
+  const date = new Date(dateStr)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
+}
 
 const fetchViolations = async () => {
   loading.value = true
@@ -248,6 +291,11 @@ const editRemark = (violation) => {
   remarkVisible.value = true
 }
 
+const previewImage = (imageUrl) => {
+  previewImageUrl.value = imageUrl
+  previewVisible.value = true
+}
+
 const saveRemark = async () => {
   try {
     await violationStore.updateRemark(currentViolation.value.id, remarkText.value)
@@ -302,8 +350,36 @@ const batchDelete = async () => {
   }
 }
 
-const exportData = () => {
-  ElMessage.info('导出功能开发中...')
+const exportData = async () => {
+  try {
+    const params = {}
+    if (filters.value.camera_id) params.camera_id = filters.value.camera_id
+    if (filters.value.zone_id) params.zone_id = filters.value.zone_id
+    if (filters.value.is_processed !== null) params.is_processed = filters.value.is_processed
+    if (dateRange.value && dateRange.value.length === 2) {
+      params.start_time = dateRange.value[0]
+      params.end_time = dateRange.value[1]
+    }
+
+    const response = await violationStore.exportViolations(params)
+
+    const blob = new Blob([response.data], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    })
+
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `violations_${new Date().toISOString().slice(0, 10)}.xlsx`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+
+    ElMessage.success('导出成功')
+  } catch (error) {
+    ElMessage.error('导出失败')
+  }
 }
 
 onMounted(async () => {

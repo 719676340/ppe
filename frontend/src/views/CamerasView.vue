@@ -26,6 +26,15 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column prop="enabled" label="后台检测" width="100">
+          <template #default="scope">
+            <el-switch
+              v-model="scope.row.enabled"
+              @change="toggleDetection(scope.row)"
+              :loading="scope.row._toggling"
+            />
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="200" fixed="right">
           <template #default="scope">
             <el-button size="small" @click="testConnection(scope.row)">测试</el-button>
@@ -61,9 +70,15 @@
         </el-form-item>
         <el-form-item label="状态" prop="status">
           <el-radio-group v-model="form.status">
-            <el-radio label="active">启用</el-radio>
-            <el-radio label="inactive">停用</el-radio>
+            <el-radio value="active">启用</el-radio>
+            <el-radio value="inactive">停用</el-radio>
           </el-radio-group>
+        </el-form-item>
+        <el-form-item label="后台检测" prop="enabled">
+          <el-switch v-model="form.enabled" />
+          <span style="margin-left: 10px; color: #909399; font-size: 12px;">
+            开启后将自动对该摄像头进行后台PPE检测
+          </span>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -92,7 +107,8 @@ const form = ref({
   source_type: 'rtsp',
   source_url: '',
   location: '',
-  status: 'active'
+  status: 'active',
+  enabled: false
 })
 
 const rules = {
@@ -108,7 +124,8 @@ const showCreateDialog = () => {
     source_type: 'rtsp',
     source_url: '',
     location: '',
-    status: 'active'
+    status: 'active',
+    enabled: false
   }
   dialogVisible.value = true
 }
@@ -128,6 +145,25 @@ const submitForm = async () => {
     } else {
       await cameraStore.createCamera(form.value)
       ElMessage.success('创建成功')
+
+      // 如果启用了后台检测，则启动检测
+      if (form.value.enabled) {
+        // 重新获取列表以获得新创建的摄像头ID
+        await fetchCameras()
+        const newCamera = cameras.value.find(c => c.name === form.value.name)
+        if (newCamera) {
+          try {
+            const result = await cameraStore.startDetection(newCamera.id)
+            if (result.status === 'started') {
+              ElMessage.success(`已自动启动检测: ${result.message}`)
+            } else {
+              ElMessage.warning(`检测启动状态: ${result.message}`)
+            }
+          } catch (error) {
+            ElMessage.error('自动启动检测失败')
+          }
+        }
+      }
     }
     dialogVisible.value = false
     await fetchCameras()
@@ -148,6 +184,47 @@ const deleteCamera = async (camera) => {
     if (error !== 'cancel') {
       ElMessage.error('删除失败')
     }
+  }
+}
+
+const toggleDetection = async (camera) => {
+  camera._toggling = true
+  try {
+    // 先更新数据库中的启用状态
+    await cameraStore.updateCamera(camera.id, { enabled: camera.enabled })
+
+    // 然后启动或停止实际的检测进程
+    if (camera.enabled) {
+      const result = await cameraStore.startDetection(camera.id)
+      if (result.status === 'started') {
+        ElMessage.success(`已启用后台检测: ${result.message}`)
+      } else if (result.status === 'already_running') {
+        ElMessage.warning(result.message)
+      } else {
+        ElMessage.error(`启动检测失败: ${result.message}`)
+        // 恢复开关状态
+        camera.enabled = false
+        await cameraStore.updateCamera(camera.id, { enabled: false })
+      }
+    } else {
+      const result = await cameraStore.stopDetection(camera.id)
+      if (result.status === 'stopped') {
+        ElMessage.success(`已禁用后台检测: ${result.message}`)
+      } else if (result.status === 'not_running') {
+        ElMessage.warning(result.message)
+      } else {
+        ElMessage.error(`停止检测失败: ${result.message}`)
+      }
+    }
+
+    await fetchCameras()
+  } catch (error) {
+    ElMessage.error('操作失败')
+    // 恢复开关状态
+    camera.enabled = !camera.enabled
+    await cameraStore.updateCamera(camera.id, { enabled: camera.enabled })
+  } finally {
+    camera._toggling = false
   }
 }
 

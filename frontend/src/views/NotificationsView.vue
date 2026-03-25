@@ -14,12 +14,12 @@
 
       <!-- 筛选标签 -->
       <el-radio-group v-model="filterType" @change="fetchNotifications" style="margin-bottom: 20px;">
-        <el-radio-button label="all">全部 ({{ total }})</el-radio-button>
-        <el-radio-button label="unread">未读 ({{ unreadCount }})</el-radio-button>
-        <el-radio-button label="violation">违规</el-radio-button>
-        <el-radio-button label="warning">警告</el-radio-button>
-        <el-radio-button label="info">信息</el-radio-button>
-        <el-radio-button label="success">成功</el-radio-button>
+        <el-radio-button value="all">全部 ({{ total }})</el-radio-button>
+        <el-radio-button value="unread">未读 ({{ unreadCount }})</el-radio-button>
+        <el-radio-button value="violation">违规</el-radio-button>
+        <el-radio-button value="warning">警告</el-radio-button>
+        <el-radio-button value="info">信息</el-radio-button>
+        <el-radio-button value="success">成功</el-radio-button>
       </el-radio-group>
 
       <!-- 通知列表 -->
@@ -27,7 +27,7 @@
         <el-timeline-item
           v-for="notification in notifications"
           :key="notification.id"
-          :timestamp="notification.created_at"
+          :timestamp="formatDateTime(notification.created_at)"
           placement="top"
           :color="getTimelineColor(notification.type)"
         >
@@ -114,12 +114,15 @@ const fetchNotifications = async () => {
   loading.value = true
   try {
     const unreadOnly = filterType.value === 'unread'
-    await notificationStore.fetchNotifications(unreadOnly)
+    const skip = (page.value - 1) * pageSize.value
+    const limit = pageSize.value
+
+    await notificationStore.fetchNotifications({ unreadOnly, skip, limit })
     notifications.value = notificationStore.notifications
     total.value = notificationStore.total
     unreadCount.value = notificationStore.unreadCount
 
-    // 按类型过滤
+    // 按类型过滤（仅在前端过滤，不影响分页）
     if (filterType.value !== 'all' && filterType.value !== 'unread') {
       notifications.value = notifications.value.filter(n => n.type === filterType.value)
     }
@@ -156,6 +159,18 @@ const getTypeLabel = (type) => {
     success: '成功'
   }
   return labelMap[type] || '通知'
+}
+
+const formatDateTime = (dateStr) => {
+  if (!dateStr) return ''
+  const date = new Date(dateStr)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
 }
 
 const markRead = async (notification) => {

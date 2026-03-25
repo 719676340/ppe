@@ -24,12 +24,12 @@
           </template>
 
           <div class="video-container">
-            <video
+            <!-- MJPEG流使用img标签显示 -->
+            <img
               ref="videoRef"
-              autoplay
-              muted
-              style="width: 100%; height: auto; background: #000;"
-            ></video>
+              style="width: 100%; height: 100%; object-fit: contain; background: #000;"
+              alt="检测画面"
+            />
             <canvas
               ref="canvasRef"
               style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"
@@ -107,8 +107,10 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { VideoPlay, VideoPause } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCameraStore } from '../stores/camera'
 import { useViolationStore } from '../stores/violation'
+import { detectionApi } from '../api/detection'
 import * as echarts from 'echarts'
 
 const cameraStore = useCameraStore()
@@ -126,6 +128,8 @@ const cameras = ref([])
 const recentViolations = ref([])
 let chart = null
 let ws = null
+let currentCameraId = null
+let violationRefreshInterval = null  // 违规记录定时刷新
 
 const initChart = () => {
   const chartDom = document.getElementById('realtime-chart')
@@ -145,41 +149,104 @@ const startDetection = async () => {
     return
   }
 
-  detectionStatus.value = '检测中'
+  try {
+    detectionStatus.value = '正在启动...'
+    currentCameraId = selectedCamera.value
 
-  // 连接WebSocket
-  ws = new WebSocket(`ws://localhost:8000/ws/detection`)
+    // 调用后端API启动检测
+    await detectionApi.start(selectedCamera.value)
+    ElMessage.success('检测已启动')
 
-  ws.onopen = () => {
-    console.log('WebSocket connected')
-  }
+    detectionStatus.value = '检测中'
 
-  ws.onmessage = (event) => {
-    const data = JSON.parse(event.data)
-    if (data.type === 'detection') {
-      personCount.value = data.person_count || 0
-      violationCount.value = data.violation_count || 0
-      updateChart(data.timestamp, data.violation_count)
+    // 设置视频流源（MJPEG流）
+    if (videoRef.value) {
+      videoRef.value.src = detectionApi.getStreamUrl(selectedCamera.value)
     }
-  }
 
-  ws.onerror = (error) => {
-    console.error('WebSocket error:', error)
-    ElMessage.error('WebSocket连接失败')
-  }
+    // 连接WebSocket
+    ws = new WebSocket(`ws://localhost:8000/ws/detection`)
 
-  ws.onclose = () => {
-    console.log('WebSocket closed')
-    detectionStatus.value = '已停止'
+    ws.onopen = () => {
+      console.log('WebSocket connected')
+      // 启动定时刷新违规记录（每5秒刷新一次）
+      violationRefreshInterval = setInterval(() => {
+        loadRecentViolations()
+      }, 5000)
+    }
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data)
+      console.log('收到WebSocket消息:', data)
+
+      if (data.type === 'detection') {
+        personCount.value = data.person_count || 0
+        violationCount.value = data.violation_count || 0
+        console.log('检测数据 - 人数:', personCount.value, '违规数:', violationCount.value)
+        updateChart(data.timestamp, data.violation_count)
+      } else if (data.type === 'violation') {
+        // 收到新的违规记录
+        ElMessage.warning(`检测到违规: 摄像头${data.data.camera_id}`)
+        // 刷新违规记录列表
+        loadRecentViolations()
+      }
+    }
+
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error)
+      ElMessage.error('WebSocket连接失败')
+    }
+
+    ws.onclose = () => {
+      console.log('WebSocket closed')
+      if (currentCameraId) {
+        detectionStatus.value = '已停止'
+      }
+      // 清除定时刷新
+      if (violationRefreshInterval) {
+        clearInterval(violationRefreshInterval)
+        violationRefreshInterval = null
+      }
+    }
+
+  } catch (error) {
+    console.error('启动检测失败:', error)
+    ElMessage.error(`启动检测失败: ${error.message || '未知错误'}`)
+    detectionStatus.value = '启动失败'
   }
 }
 
-const stopDetection = () => {
-  if (ws) {
-    ws.close()
-    ws = null
+const stopDetection = async () => {
+  try {
+    // 清除定时刷新
+    if (violationRefreshInterval) {
+      clearInterval(violationRefreshInterval)
+      violationRefreshInterval = null
+    }
+
+    // 停止视频流
+    if (videoRef.value) {
+      videoRef.value.src = ''
+    }
+
+    // 关闭WebSocket
+    if (ws) {
+      ws.close()
+      ws = null
+    }
+
+    // 调用后端API停止检测
+    if (currentCameraId) {
+      await detectionApi.stop(currentCameraId)
+      ElMessage.success('检测已停止')
+    }
+
+    currentCameraId = null
+    detectionStatus.value = '已停止'
+  } catch (error) {
+    console.error('停止检测失败:', error)
+    ElMessage.error(`停止检测失败: ${error.message || '未知错误'}`)
   }
-  detectionStatus.value = '已停止'
 }
 
 const updateChart = (timestamp, count) => {
@@ -211,6 +278,15 @@ const viewViolation = (violation) => {
   )
 }
 
+const loadRecentViolations = async () => {
+  try {
+    await violationStore.fetchViolations({ page: 1, page_size: 10 })
+    recentViolations.value = violationStore.violations
+  } catch (error) {
+    console.error('加载违规记录失败:', error)
+  }
+}
+
 onMounted(async () => {
   await cameraStore.fetchCameras()
   cameras.value = cameraStore.cameras
@@ -235,16 +311,24 @@ onUnmounted(() => {
 .video-container {
   position: relative;
   width: 100%;
-  padding-top: 56.25%; /* 16:9 比例 */
+  /* 移除固定比例，让视频自适应 */
   background: #000;
+  aspect-ratio: auto;
+  min-height: 400px;
 }
 
-.video-container video,
+.video-container img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
 .video-container canvas {
   position: absolute;
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
+  pointer-events: none;
 }
 </style>

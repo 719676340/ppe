@@ -1,7 +1,7 @@
 # backend/management/schemas/violation.py
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 class ViolationBase(BaseModel):
     camera_id: int
@@ -11,9 +11,37 @@ class ViolationBase(BaseModel):
     is_processed: bool = False
     remark: Optional[str] = None
 
-class ViolationResponse(ViolationBase):
+class ViolationResponse(BaseModel):
     id: int
+    camera_id: int
+    zone_id: Optional[int] = None
+    violation_time: datetime
+    image_path: Optional[str] = None
+    is_processed: bool = False
+    remark: Optional[str] = None
     created_at: datetime
+    camera_name: Optional[str] = None
+    zone_name: Optional[str] = None
+
+    @field_serializer('violation_time')
+    def serialize_violation_time(self, value: datetime | None) -> str:
+        """将UTC时间转换为本地时间字符串"""
+        if value is None:
+            return ""
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        local_time = value.astimezone()
+        return local_time.strftime('%Y-%m-%d %H:%M:%S')
+
+    @field_serializer('created_at')
+    def serialize_created_at(self, value: datetime | None) -> str:
+        """将UTC时间转换为本地时间字符串"""
+        if value is None:
+            return ""
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        local_time = value.astimezone()
+        return local_time.strftime('%Y-%m-%d %H:%M:%S')
 
     class Config:
         from_attributes = True

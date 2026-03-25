@@ -1,11 +1,13 @@
 # backend/main.py
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, BackgroundTasks
+from datetime import datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from contextlib import asynccontextmanager
 import logging
 import asyncio
+import time
 import cv2
 from config import settings
 from pathlib import Path
@@ -22,11 +24,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 配置JSON序列化器处理datetime（使用本地时区）
+def json_serializer(obj):
+    """JSON序列化器，处理datetime对象"""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
+
 # 全局变量：检测器和管理器
 detector = None
 roi_manager = None
 violation_recorder = None
 stream_processors = {}  # {camera_id: StreamProcessor}
+detection_stats_task = None  # 检测统计广播任务
 
 # 全局WebSocket连接管理
 class ConnectionManager:
@@ -62,10 +72,60 @@ async def on_detection_callback(data: dict):
         "data": data
     })
 
+async def broadcast_detection_stats():
+    """定期广播检测统计数据"""
+    logger.info("[统计任务] 启动检测统计广播任务")
+    while True:
+        try:
+            # 检查是否有活动的处理器
+            if not stream_processors:
+                logger.debug("[统计任务] 没有活动的检测处理器")
+                await asyncio.sleep(1)
+                continue
+
+            stats = []
+            for camera_id, processor in stream_processors.items():
+                try:
+                    detections = processor.get_latest_detections()
+                    person_count = len(detections)
+                    violation_count = sum(1 for d in detections if d.get('is_violation', False))
+
+                    logger.debug(f"[统计] 摄像头{camera_id}: 检测数={person_count}, 违规数={violation_count}")
+                    for i, d in enumerate(detections):
+                        logger.debug(f"  检测{i+1}: class={d.get('class_name')}, is_violation={d.get('is_violation')}, conf={d.get('confidence'):.2f}")
+
+                    stats.append({
+                        'camera_id': camera_id,
+                        'person_count': person_count,
+                        'violation_count': violation_count,
+                        'timestamp': datetime.now().isoformat()
+                    })
+                except Exception as e:
+                    logger.error(f"[统计] 获取摄像头{camera_id}统计失败: {e}", exc_info=True)
+
+            # 发送检测统计数据
+            if stats:
+                # 扁平化数据结构以匹配前端期望
+                stat_data = stats[0] if len(stats) == 1 else {"cameras": stats}
+                message = {
+                    "type": "detection",
+                    "person_count": stat_data.get('person_count', 0),
+                    "violation_count": stat_data.get('violation_count', 0),
+                    "timestamp": stat_data.get('timestamp', datetime.now().isoformat()),
+                    "camera_id": stat_data.get('camera_id')
+                }
+                logger.info(f"[统计] 广播: 人数={message['person_count']}, 违规数={message['violation_count']}")
+                await manager.broadcast(message)
+
+        except Exception as e:
+            logger.error(f"[统计任务] 广播检测统计失败: {e}", exc_info=True)
+
+        await asyncio.sleep(1)  # 每秒更新一次
+
 # 应用启动和关闭事件
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global detector, roi_manager, violation_recorder
+    global detector, roi_manager, violation_recorder, detection_stats_task
 
     # 启动时执行
     logger.info("创建数据库表...")
@@ -78,13 +138,63 @@ async def lifespan(app: FastAPI):
 
     detector = PPEDetector()
     roi_manager = ROIManager()
-    violation_recorder = ViolationRecorder(str(settings.UPLOAD_DIR))
+    violation_recorder = ViolationRecorder(
+        str(settings.UPLOAD_DIR),
+        dedup_interval=settings.DEFAULT_DEDUP_INTERVAL,
+        max_distance=settings.DEFAULT_DEDUP_DISTANCE
+    )
+
+    # 清空去重缓存，确保启动时缓存是干净的
+    violation_recorder.clear_cache()
+    logger.info("已清空违规去重缓存")
 
     logger.info("PPE检测系统初始化完成")
+
+    # 自动启动已启用的摄像头检测
+    if settings.AUTO_START_DETECTION:
+        logger.info("自动启动已启用的摄像头检测...")
+        from management.database import SessionLocal, Camera
+        db = SessionLocal()
+        try:
+            enabled_cameras = db.query(Camera).filter(Camera.enabled == True).all()
+            for camera in enabled_cameras:
+                try:
+                    from detection import StreamProcessor
+                    processor = StreamProcessor(
+                        source_url=camera.source_url,
+                        camera_id=camera.id,
+                        detector=detector,
+                        roi_manager=roi_manager,
+                        violation_recorder=violation_recorder,
+                        on_detection_callback=on_detection_callback
+                    )
+                    stream_processors[camera.id] = processor
+                    processor.start()
+                    logger.info(f"自动启动摄像头 {camera.id} ({camera.name}) 检测")
+                except Exception as e:
+                    logger.error(f"自动启动摄像头 {camera.id} 失败: {e}")
+        finally:
+            db.close()
+        logger.info(f"已自动启动 {len(stream_processors)} 个摄像头检测")
+    else:
+        logger.info("自动启动检测已禁用，需手动通过API启动")
+
+    # 启动检测统计广播任务
+    detection_stats_task = asyncio.create_task(broadcast_detection_stats())
+    logger.info("检测统计广播任务已启动")
+
     logger.info("应用启动完成")
     yield
 
     # 关闭时执行
+    logger.info("停止检测统计广播任务...")
+    if detection_stats_task:
+        detection_stats_task.cancel()
+        try:
+            await detection_stats_task
+        except asyncio.CancelledError:
+            pass
+
     logger.info("停止所有视频流处理器...")
     for processor in stream_processors.values():
         processor.stop()
@@ -108,8 +218,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 挂载静态文件
-app.mount("/static", StaticFiles(directory="./static"), name="static")
+# 挂载静态文件（使用绝对路径指向项目根目录的static目录）
+from pathlib import Path
+BASE_DIR = Path(__file__).resolve().parent.parent
+static_dir = BASE_DIR / "static"
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 # 注册路由
 app.include_router(camera_router)
@@ -205,7 +318,7 @@ async def get_stream_frame(camera_id: int):
                            b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
             else:
                 # 没有新帧，等待
-                await asyncio.sleep(0.1)
+                time.sleep(0.1)
 
     return StreamingResponse(
         generate_frames(),

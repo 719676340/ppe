@@ -45,6 +45,18 @@ export const useCameraStore = defineStore('camera', {
 
     async testConnection(data) {
       return await cameraApi.testConnection(data)
+    },
+
+    async startDetection(id) {
+      return await cameraApi.startDetection(id)
+    },
+
+    async stopDetection(id) {
+      return await cameraApi.stopDetection(id)
+    },
+
+    async getDetectionStatus() {
+      return await cameraApi.getDetectionStatus()
     }
   }
 })

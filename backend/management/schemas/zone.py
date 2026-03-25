@@ -17,9 +17,11 @@ class DetectionZoneUpdate(BaseModel):
     coordinates: Optional[str] = None
     enabled: Optional[bool] = None
 
-class DetectionZoneResponse(DetectionZoneBase):
+class DetectionZoneResponse(BaseModel):
     id: int
+    camera_id: int
+    camera_name: Optional[str] = None  # 摄像头名称
+    name: str
+    coordinates: str
+    enabled: bool
     created_at: datetime
-
-    class Config:
-        from_attributes = True

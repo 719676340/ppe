@@ -9,6 +9,7 @@ class CameraBase(BaseModel):
     source_url: Optional[str] = None
     location: Optional[str] = Field(None, max_length=100)
     status: str = Field("active", pattern="^(active|inactive)$")
+    enabled: bool = Field(False, description="是否启用后台检测")
 
 class CameraCreate(CameraBase):
     pass
@@ -19,6 +20,7 @@ class CameraUpdate(BaseModel):
     source_url: Optional[str] = None
     location: Optional[str] = Field(None, max_length=100)
     status: Optional[str] = Field(None, pattern="^(active|inactive)$")
+    enabled: Optional[bool] = Field(None, description="是否启用后台检测")
 
 class CameraResponse(CameraBase):
     id: int

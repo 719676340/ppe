@@ -1,5 +1,8 @@
 // frontend/src/api/violation.js
 import request from './index'
+import axios from 'axios'
+
+const baseURL = '/api'
 
 export const violationApi = {
   // 获取违规记录列表
@@ -32,5 +35,13 @@ export const violationApi = {
   // 删除违规记录
   delete(id) {
     return request.delete(`/violations/${id}`)
+  },
+
+  // 导出违规记录为Excel
+  export(params) {
+    return axios.get(`${baseURL}/violations/export`, {
+      params,
+      responseType: 'blob'
+    })
   }
 }
